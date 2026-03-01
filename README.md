@@ -9,37 +9,29 @@
 
 ## Brief Explanation
 
-- We modified the `pom.xml` to compile different parts of the project into different WAR files.
-- We use Redis for session state and star pod state, so this setup does not rely on sticky sessions or `HttpSession`.
+- The Multi-Service branch uses Redis instead of session to store shared user information and star pod state.
+- We modified the `pom.xml` to compile different part of the projects into different war files.
 
-### Storing States
+### Redis
 
-There are two kinds of state in this application:
+We use Redis to replace pod-local session storage. A utility class `RedisUtil` is added to help you use Redis.
+The changes in `LoginServlet` and `LoginFilter` show you how to replace session with Redis-backed state.
+- `common/RedisUtil.java`: It contains functions to initialize Redis, `get`, `set`, and `incr`.
+- `login/LoginServlet.java`: It shows how to create login state in Redis. The username and the loginTime are serialized and stored under `session:<sessionId>`. Then the `sessionId` is set to cookies, so later requests always contain the session id.
+- `common/LoginFilter.java`: It shows how to get `sessionId` from cookies and how to validate login by reading session data from Redis.
+- `star/SingleStarServlet.java`: It shows different way of storing states. `loginTime` is a state shared by both services, we store it in Redis session data. `accessCount` is a state for star service, and we store it in Redis with key `accessCount:<username>`, so all star pods share the same counter.
 
-1. **Login session state** is stored in Redis under `session:<sessionId>`.
-   - `login/LoginServlet.java` creates a session object (`username`, `loginTime`), serializes it as JSON, and stores it in Redis using `set`.
-   - `common/LoginFilter.java` reads `redisSessionId` from cookie, loads the serialized session JSON using `get`, deserializes it, and attaches `username` and `loginTime` to request attributes.
-
-2. **`accessCount` (star-service-only state)** is stored in Redis under `accessCount:<username>`.
-   - `star/SingleStarServlet.java` increments this key with `incr` for each request.
-   - Since Redis is shared by all star pods, the count stays consistent across pods.
-
-### Redis Configuration
-
-Redis configuration is in `WebContent/META-INF/context.xml`:
-
+Redis address is configured in `WebContent/META-INF/context.xml`:
 ```xml
 <Environment name="redis/Address" type="java.lang.String" value="redis-service:6379"/>
 ```
-
-Tomcat has first-class JNDI support for JDBC `DataSource` resources (MySQL), but not a built-in Jedis pool resource factory. So this example uses a JNDI environment entry for Redis address (`host:port`) and initializes the Jedis pool in `common/RedisUtil.java`.
 
 ### Maven Profiles
 The original Maven configuration will compile everything in the codebase into a war file. Using Maven Profiles, we can compile different part of project into different war files.
 In this branch, we split `/api/login` endpoint to a login profile, and the other endpoints to a star profile.
 - First, split the source files into different packages. Note that we have a package called `common`, which is shared among different profiles.
-- Next, modify the `pom.xml` to set up different profiles. 
-  - Line 46: we change the sourceDirectory from `src` to a parameter `${endpointDir}`. You can set different value to this parameter for different profiles. 
+- Next, modify the `pom.xml` to set up different profiles.
+  - Line 46: we change the sourceDirectory from `src` to a parameter `${endpointDir}`. You can set different value to this parameter for different profiles.
   - Line 61: we set a parameter `${excludes}`, which can be used to exclude some static files inside `WebContent`.
   - Line 64-81 show how to add common package to all profiles
   - Line 85-107 show how to use Profiles. For each profile we define the value of `endpointDir` and `excludes`.
@@ -50,8 +42,8 @@ The `Dockerfile` is also updated. At line 7 we defined an argument `MVN_PROFILE`
 - Compile different part of the project into war file with
   ```
   mvn package -P ${profileName}
-  ``` 
-- Login endpoint: 
+  ```
+- Login endpoint:
   ```
   mvn package -P login
   ```
@@ -64,12 +56,12 @@ If you see errors in Intellij, open the Maven panel at the right. Expand "Profil
 
 ## Build different Docker images
 
-- Build the image for login endpoint with 
+- Build the image for login endpoint with
   ```
   sudo docker build . --build-arg MVN_PROFILE=login --platform linux/amd64 -t <DockerHub-user-name>/cs122b-p5-murphy-login:v1
   ```
   - We specify the Maven profile name with `--build-arg MVN_PROFILE=${profileName}`
-- Push the image to DockerHub with 
+- Push the image to DockerHub with
   ```
   sudo docker push <DockerHub-user-name>/cs122b-p5-murphy-login:v1
   ```
@@ -80,68 +72,3 @@ If you see errors in Intellij, open the Maven panel at the right. Expand "Profil
   ```
   sudo docker push <DockerHub-user-name>/cs122b-p5-murphy-star:v1
   ```
-
-## Deploy Redis in the k8s cluster
-
-Before deploying the login/star services, you need a Redis pod running in the cluster. Add the following to your **k8s instruction repo** (`cs122b-project5-murphy-movies-k8s`):
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: redis
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: redis
-  template:
-    metadata:
-      labels:
-        app: redis
-    spec:
-      containers:
-        - name: redis
-          image: redis:7-alpine
-          ports:
-            - containerPort: 6379
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: redis-service
-spec:
-  selector:
-    app: redis
-  ports:
-    - port: 6379
-      targetPort: 6379
-  type: ClusterIP
-```
-
-Deploy it with:
-```
-kubectl apply -f redis.yaml
-kubectl get pods -l app=redis
-```
-
-## Verify Redis is working
-
-1. Check Redis keys from inside the cluster:
-   ```
-   kubectl exec -it <redis-pod-name> -- redis-cli
-   > KEYS *
-   > GET session:<some-session-id>
-   > GET accessCount:anteater
-   ```
-
-2. Watch star pod logs — `accessCount` should increment sequentially across all pods:
-   ```
-   kubectl logs -f deployment/murphy-star --all-pods=true
-   ```
-
-## Redis Topology for This Demo
-
-- This example uses a single Redis pod (`replicas: 1`) to keep the architecture simple.
-- For class/demo behavior, this is sufficient to show shared state across multiple login/star pods.
-- A Redis master-replica setup is optional and mainly for high availability/production needs.
