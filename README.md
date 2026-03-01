@@ -1,11 +1,8 @@
 # CS 122B Project 5 Murphy movies example
 
-1. This example application allows you to log in, see a movie by Eddie Murphy and leave comments.
-2. In branch `Docker`, you will see how this application is turned into a docker image and deployed to AWS using Docker
-3. In branch `Kubernetes`, you will see how this application is modified to be deployed using Kubernetes pods
-4. In branch `Multi-Service`, you will see how this application is modified to a multi-service architecture.
+- This example application allows you to log in, see a movie by Eddie Murphy and leave comments.
 
-## This README.md file is used for the Multi-Service branch
+## This README.md file is used for Multi-Service
 
 ## Brief Explanation
 
